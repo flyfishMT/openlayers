@@ -113,6 +113,59 @@ EventTarget.prototype.dispatchEvent = function(event) {
 
 
 /**
+ * @param {{type: string,
+ *     target: (EventTarget|module:ol/events/EventTarget~EventTarget|undefined)}|module:ol/events/Event~Event|
+ *     string} event Event or event type.
+ * @return {Promise<boolean>|undefined} A promise that resolves to `false` if anyone called preventDefault on the
+ *     event object or if any of the listeners returned false.
+ */
+EventTarget.prototype.dispatchEventAsync = function(event) {
+  const evt = typeof event === 'string' ? new Event(event) : event;
+  const type = evt.type;
+  evt.target = this;
+  const listeners = this.listeners_[type];
+  let prom;
+  const self = this;
+
+  if (listeners) {
+    if (!(type in this.dispatching_)) {
+      this.dispatching_[type] = 0;
+      this.pendingRemovals_[type] = 0;
+    }
+    ++this.dispatching_[type];
+
+    // head of promise chain
+    if (listeners.length > 0) {
+      prom = Promise.resolve(listeners[0].call(this, evt));
+    }
+    for (let i = 1, ii = listeners.length; i < ii; ++i) {
+      prom = prom.then(function(result) {
+        if (result !== false && !evt.propagationStopped) {
+          result = Promise.resolve(listeners[i].call(this, evt));
+        }
+        return result;
+      });
+    }
+
+    // do this after all promises resolve
+    prom = prom.then(function(result) {
+
+      --self.dispatching_[type];
+      if (self.dispatching_[type] === 0) {
+        let pendingRemovals = self.pendingRemovals_[type];
+        delete self.pendingRemovals_[type];
+        while (pendingRemovals--) {
+          self.removeEventListener(type, UNDEFINED);
+        }
+        delete self.dispatching_[type];
+      }
+      return result;
+    });
+    return prom;
+  }
+};
+
+/**
  * @inheritDoc
  */
 EventTarget.prototype.disposeInternal = function() {
